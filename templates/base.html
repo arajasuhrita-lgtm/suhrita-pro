@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Portfolio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav>
+    <h2>My Portfolio</h2>
+</nav>
+
+{% block content %}{% endblock %}
+
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
