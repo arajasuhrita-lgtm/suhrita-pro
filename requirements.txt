@@ -2,5 +2,9 @@ Flask
 Flask-PyMongo
 pymongo
 python-dotenv
-gunicorn
 requests
+gunicorn
+certifi
+urllib3
+idna
+chardet
