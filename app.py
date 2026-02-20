@@ -1,12 +1,10 @@
-from flask import Flask, render_template, jsonify, request, session
+from flask import Flask, render_template, jsonify, request
 from flask_pymongo import PyMongo
 from bson import json_util
 import json
 import os
 from datetime import datetime
 from bson.objectid import ObjectId
-import requests
-from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -15,14 +13,10 @@ app.secret_key = os.urandom(24)
 app.config["MONGO_URI"] = os.environ.get("MONGO_URI", "mongodb://localhost:27017/portfolio")
 mongo = PyMongo(app)
 
-# OpenRouter API Key
-OPENROUTER_API_KEY = "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"
-
 # Collections
 resume_collection = mongo.db.resume
 messages_collection = mongo.db.messages
 visitors_collection = mongo.db.visitors
-chat_history_collection = mongo.db.chat_history
 
 @app.route('/')
 def index():
@@ -107,86 +101,20 @@ def index():
     
     return render_template('index.html', resume=resume_data)
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    try:
-        data = request.json
-        user_message = data.get('message', '')
-        session_id = session.get('session_id', str(datetime.now().timestamp()))
-        session['session_id'] = session_id
-        
-        # Get resume context for the AI
-        resume_data = resume_collection.find_one({"email": "arajasuhrita@gmail.com"})
-        
-        # Create context for AI
-        context = f"""
-        You are a helpful assistant for ARAJA SUHRITA's portfolio website. Here's information about Araja Suhrita:
-        
-        Name: {resume_data.get('name', 'ARAJA SUHRITA')}
-        Email: {resume_data.get('email', 'arajasuhrita@gmail.com')}
-        Phone: {resume_data.get('phone', '9398545812')}
-        About: {resume_data.get('about', 'B.Tech student')}
-        Education: {', '.join([f"{e.get('degree', '')} ({e.get('cgpa', '')} CGPA)" for e in resume_data.get('education', [])])}
-        Technical Skills: {', '.join(resume_data.get('technical_skills', []))}
-        Soft Skills: {', '.join(resume_data.get('soft_skills', []))}
-        Services: {', '.join([s.get('title', '') for s in resume_data.get('services', [])])}
-        
-        Please answer questions about Araja Suhrita professionally and helpfully. Keep responses concise and friendly.
-        """
-        
-        # Call OpenRouter API
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openai/gpt-3.5-turbo",
-                "messages": [
-                    {"role": "system", "content": context},
-                    {"role": "user", "content": user_message}
-                ]
-            }
-        )
-        
-        ai_response = response.json()
-        bot_message = ai_response['choices'][0]['message']['content']
-        
-        # Save chat history
-        chat_data = {
-            "session_id": session_id,
-            "user_message": user_message,
-            "bot_message": bot_message,
-            "timestamp": datetime.now()
-        }
-        chat_history_collection.insert_one(chat_data)
-        
-        return jsonify({
-            "success": True,
-            "message": bot_message,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        print(f"Chat error: {str(e)}")
-        return jsonify({
-            "success": False,
-            "message": "I'm having trouble responding right now. Please try again later."
-        }), 500
+@app.route('/api/resume', methods=['GET'])
+def get_resume():
+    resume = resume_collection.find_one({"email": "arajasuhrita@gmail.com"})
+    return jsonify(json.loads(json_util.dumps(resume)))
 
-@app.route('/api/chat/history', methods=['GET'])
-def get_chat_history():
-    try:
-        session_id = session.get('session_id')
-        if session_id:
-            history = list(chat_history_collection.find(
-                {"session_id": session_id}
-            ).sort("timestamp", -1).limit(50))
-            return jsonify(json.loads(json_util.dumps(history)))
-        return jsonify([])
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route('/api/update-resume', methods=['POST'])
+def update_resume():
+    data = request.json
+    result = resume_collection.update_one(
+        {"email": "arajasuhrita@gmail.com"},
+        {"$set": data},
+        upsert=True
+    )
+    return jsonify({"success": True, "modified": result.modified_count})
 
 @app.route('/api/contact', methods=['POST'])
 def contact():
@@ -227,6 +155,36 @@ def contact():
             "message": "Failed to send message. Please try again."
         }), 500
 
+@app.route('/api/messages', methods=['GET'])
+def get_messages():
+    """Admin endpoint to view all messages"""
+    try:
+        messages = list(messages_collection.find().sort("timestamp", -1))
+        return jsonify(json.loads(json_util.dumps(messages)))
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/messages/<message_id>/read', methods=['PUT'])
+def mark_message_read(message_id):
+    """Mark a message as read"""
+    try:
+        result = messages_collection.update_one(
+            {"_id": ObjectId(message_id)},
+            {"$set": {"read": True}}
+        )
+        return jsonify({"success": True, "modified": result.modified_count})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/messages/<message_id>', methods=['DELETE'])
+def delete_message(message_id):
+    """Delete a message"""
+    try:
+        result = messages_collection.delete_one({"_id": ObjectId(message_id)})
+        return jsonify({"success": True, "deleted": result.deleted_count})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @app.route('/api/visitor-count', methods=['GET'])
 def visitor_count():
     try:
@@ -234,6 +192,96 @@ def visitor_count():
         return jsonify({"count": count})
     except Exception as e:
         return jsonify({"count": 0, "error": str(e)})
+
+@app.route('/admin/messages')
+def admin_messages():
+    """Simple admin page to view messages"""
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Message Admin</title>
+        <style>
+            body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            h1 { color: #333; }
+            .message { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            .unread { border-left: 4px solid #667eea; }
+            .read { opacity: 0.7; }
+            .timestamp { color: #666; font-size: 0.9em; }
+            .actions { margin-top: 10px; }
+            button { padding: 5px 15px; margin-right: 10px; cursor: pointer; border: none; border-radius: 4px; }
+            .mark-read { background: #28a745; color: white; }
+            .delete { background: #dc3545; color: white; }
+            .refresh { background: #667eea; color: white; padding: 10px 20px; margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Contact Messages</h1>
+            <button class="refresh" onclick="loadMessages()">Refresh Messages</button>
+            <div id="messages"></div>
+        </div>
+        
+        <script>
+            async function loadMessages() {
+                try {
+                    const response = await fetch('/api/messages');
+                    const messages = await response.json();
+                    displayMessages(messages);
+                } catch (error) {
+                    console.error('Error loading messages:', error);
+                }
+            }
+            
+            function displayMessages(messages) {
+                const container = document.getElementById('messages');
+                if (messages.length === 0) {
+                    container.innerHTML = '<p>No messages yet.</p>';
+                    return;
+                }
+                
+                container.innerHTML = messages.map(msg => `
+                    <div class="message ${msg.read ? 'read' : 'unread'}">
+                        <h3>${msg.name}</h3>
+                        <p><strong>Email:</strong> ${msg.email}</p>
+                        <p><strong>Message:</strong> ${msg.message}</p>
+                        <p class="timestamp">${new Date(msg.timestamp.$date).toLocaleString()}</p>
+                        <p><small>IP: ${msg.ip_address || 'N/A'}</small></p>
+                        <div class="actions">
+                            ${!msg.read ? `<button class="mark-read" onclick="markRead('${msg._id.$oid}')">Mark as Read</button>` : ''}
+                            <button class="delete" onclick="deleteMessage('${msg._id.$oid}')">Delete</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+            
+            async function markRead(id) {
+                try {
+                    await fetch(`/api/messages/${id}/read`, { method: 'PUT' });
+                    loadMessages();
+                } catch (error) {
+                    console.error('Error marking message as read:', error);
+                }
+            }
+            
+            async function deleteMessage(id) {
+                if (confirm('Are you sure you want to delete this message?')) {
+                    try {
+                        await fetch(`/api/messages/${id}`, { method: 'DELETE' });
+                        loadMessages();
+                    } catch (error) {
+                        console.error('Error deleting message:', error);
+                    }
+                }
+            }
+            
+            // Load messages on page load
+            loadMessages();
+        </script>
+    </body>
+    </html>
+    '''
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
